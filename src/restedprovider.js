@@ -1,32 +1,24 @@
 'use strict';
 
-var app = angular.module('rested');
-
 app.provider('$rested', function() {
 
     var defaultHeaders = {};
     var localStorage = false;
-    var baseUrls = ["http://localhost/"];
+    var baseUrl = 'http://localhost/';
     var offline = false;
     var offlineQueue = [];
 
     var configure = {
         /**
-         * Sets the base url for rested
-         * @param {string} url - The url
-         */
-        setBaseUrls: function(urls) {
-            if(!Array.isArray(urls))
-                urls = [urls];
+        * Sets the base url for rested
+        * @param {string} url - The url
+        */
+        setBaseUrl: function(url) {
+            // Missing trailing slash in baseURL
+            if(url.slice(-1) !== '/')
+                url += '/';
 
-            baseUrls = [];
-            for(var i in urls) {
-                // Missing trailing slash in baseURL
-                if(urls[i].slice(-1) !== "/")
-                    urls[i] += "/";
-
-                baseUrls.push(urls[i]);
-            }
+            baseUrl = url;
         },
 
         setDefaultHeaders: function(headers) {
@@ -50,35 +42,38 @@ app.provider('$rested', function() {
         }
     };
 
-    configure.setBaseUrl = configure.setBaseUrls;
-
     angular.extend(this, configure);
 
     this.$get = function($q, $http, $timeout, localStorageService, $event, $log) {
-        $log = $log.getInstance('RestedProvider', true);
+        $log = $log.getInstance('RestedProvider');
 
         var event = new $event();
         var stripMillis = function(obj) {
             for(var i in obj) {
-                if(obj[i] instanceof Date)
-                    obj[i] = parseInt(obj[i].getTime() / 1000);
-
-                else if(typeof obj[i] === "object")
+                if(obj[i] instanceof Date) {
+                    var utcTimeMillis = Date.UTC(obj[i].getUTCFullYear(),
+                                                 obj[i].getUTCMonth(),
+                                                 obj[i].getUTCDate(),
+                                                 obj[i].getUTCHours(),
+                                                 obj[i].getUTCMinutes(),
+                                                 obj[i].getUTCSeconds());
+                    obj[i] = parseInt(utcTimeMillis / 1000);
+                } else if(typeof obj[i] === 'object') {
                     obj[i] = stripMillis(obj[i]);
+                }
             }
 
             return obj;
         };
 
-        return function(baseUrlIndex, uri) {
+        return function(uri) {
             /**
              * @constructor
              * @param {string} uri
              */
-            var object = function(baseUrlIndex, uri) {
+            var object = function(uri) {
                 this._params = {};
                 this._routes = [];
-                this._baseUrlIndex = baseUrlIndex || 0;
 
                 this._data = {};
                 this._dataArray = [];
@@ -87,7 +82,7 @@ app.provider('$rested', function() {
                 this._isArray = false;
 
                 if(typeof uri === 'string')
-                    this._routes = uri.split("/");
+                    this._routes = uri.split('/');
 
                 this.setDefaultHeader = configure.setDefaultHeader;
                 this.setDefaultHeaders = configure.setDefaultHeaders;
@@ -116,34 +111,73 @@ app.provider('$rested', function() {
                     configure.offline();
                 };
 
-                this.getBaseUrl = function() {
-                    return baseUrls[this._baseUrlIndex];
+                // Insert an object as the first child in the cache array
+                this.prependCache = function(obj) {
+                    if(localStorage) {
+                        var uri = this.route(true, false);
+                        var localData = localStorageService.get('rested:' + uri);
+
+                        if(Array.isArray(localData)) {
+                            localData.unshift(obj);
+                            localStorageService.set('rested:' + uri, localData);
+                            return true;
+                        }
+                    }
+
+                    return false;
                 };
 
-                this.clearCacheItem = function(uri) {
+                // Insert an object as the last child in the cache array
+                this.appendCache = function(obj) {
                     if(localStorage) {
-                        uri = uri.replace(this.getBaseUrl(), "");
+                        var uri = this.route(true, false);
+                        var localData = localStorageService.get('rested:' + uri);
 
-                        $log.info("Clearing local storage updated for '" + uri + "'");
-                        localStorageService.remove("rested:" + uri);
+                        if(Array.isArray(localData)) {
+                            localData.push(obj);
+                            localStorageService.set('rested:' + uri, localData);
+                            return true;
+                        }
                     }
+
+                    return false;
+                };
+
+                this.getCache = function() {
+                    if(localStorage) {
+                        var uri = this.route(true, false);
+                        return localStorageService.get('rested:' + uri);
+                    }
+                };
+
+                this.clearCache = function() {
+                    if(localStorage) {
+                        var uri = this.route(true, false);
+                        $log.info('Clearing local storage updated for "' + uri + '"');
+                        localStorageService.remove('rested:' + uri);
+                        return true;
+                    }
+
+                    return false;
+
                 };
 
                 /**
                  * Change the route and sets the expected result to be a object
                  *
                  * example:
-                 *  $rested().one("user");
-                 *  $rested().one("users", 12);
-                 *  $rested().one("users", [1, 12]);
-                 *  $rested().one("users/12");
+                 *  $rested().one('user');
+                 *  $rested().one('users', 12);
+                 *  $rested().one('users', [1, 12]);
+                 *  $rested().one('users/12');
                  *
                  * @param {string} route - the route to be added
                  * @param {string/array} args (optional) - appends it to the route
                  * @return {rested} instance
                  */
                 this.one = function(route, args) {
-                    var newObj = clone(this);
+                    var newObj = new object();
+                    newObj._routes = this._routes.slice(0);
                     newObj._isArray = false;
 
                     if(route)
@@ -164,13 +198,14 @@ app.provider('$rested', function() {
                  * Change the route and sets the expected result to be a array
                  *
                  * example:
-                 *  $rested().all("users");
+                 *  $rested().all('users');
                  *
                  * @param {string} route (optional) - the route to be added
                  * @return {rested} instance
                  */
                 this.all = function(route) {
-                    var newObj = clone(this);
+                    var newObj = new object();
+                    newObj._routes = this._routes.slice(0);
                     newObj._isArray = true;
 
                     if(route)
@@ -184,7 +219,7 @@ app.provider('$rested', function() {
                  * Notice: these event is broadcast globally.
                  *
                  * example:
-                 *  $rested().getList("users").on("update", function(users) {
+                 *  $rested().getList('users').on('update', function(users) {
                  *      // your code here
                  *  });
                  *
@@ -193,7 +228,7 @@ app.provider('$rested', function() {
                  */
                 this.on = function(type, callback) {
                     var route = this.route(false, false);
-                    var eventIndex = "{0}_{1}".format(route, type);
+                    var eventIndex = '{0}_{1}'.format(route, type);
                     event.on(eventIndex, callback);
                 };
 
@@ -201,9 +236,9 @@ app.provider('$rested', function() {
                  * Fetching the route expecting the result is a object
                  *
                  * example:
-                 *  $rested().one("user").get();
-                 *  $rested().one("user").get({params: {id: 12}});
-                 *  $rested().get("user");
+                 *  $rested().one('user').get();
+                 *  $rested().one('user').get({params: {id: 12}});
+                 *  $rested().get('user');
                  *
                  * @param {string/object} route/opts -
                  *                          if string or array: appends the argument to the route
@@ -236,9 +271,9 @@ app.provider('$rested', function() {
                  * Fetching the route expecting the result is a array
                  *
                  * example:
-                 *  $rested().all("users").getList();
-                 *  $rested().all("users").getList({params: {limit: 42}});
-                 *  $rested().getList("users");
+                 *  $rested().all('users').getList();
+                 *  $rested().all('users').getList({params: {limit: 42}});
+                 *  $rested().getList('users');
                  *
                  * @param {string/object} route/opts -
                  *                          if string or array: appends the argument to the route
@@ -324,7 +359,7 @@ app.provider('$rested', function() {
                  *  - isArray: boolean to specified if the response should be the type array
                  *  - ignoreLocal: temporary not save the data in local storage
                  *  - ignoreData: doesn't save the data in memory, and defers the pure response
-                 *  - stale: defers local storage if it exists, otherwise fetch only once
+                 *  - prefer: option for prefered data (default, remote, local)
                  *  - extend: if isArray is true, extend the current data structure
                  *  - data: http data
                  *  - method: http method, default: get
@@ -335,9 +370,10 @@ app.provider('$rested', function() {
                  */
                 this.fetch = function(opts) {
                     var deferred = $q.defer();
+                    opts = angular.copy(opts);
 
                     if(!this.isOnline()) {
-                        $log.info("Saving in offline storage", opts);
+                        $log.info('Saving in offline storage', opts);
 
                         if(['post', 'put', 'delete'].indexOf(opts.method) > 0) {
 
@@ -348,55 +384,102 @@ app.provider('$rested', function() {
 
                             return deferred.promise;
                         } else {
-                            opts.stale = true;
+                            opts.prefer = 'local';
                         }
+                    }
+
+                    if(['default', 'local', 'remote'].indexOf(opts.prefer) === 0) {
+                        $log.warn('Invalid fetch method, using default prefered settings.');
                     }
 
                     var self = this;
                     var uri = this.route(true, false);
                     var route = this.route(false, false);
-                    var eventPrefix = "{0}_".format(route);
+                    var eventPrefix = '{0}_'.format(route);
 
                     this._isArray = opts.isArray;
 
-                    opts.url = this.getBaseUrl() + uri;
+                    opts.url = baseUrl + uri;
                     opts.method = opts.method || 'get';
                     opts.data = opts.data || {};
                     opts.extend = opts.extend || false;
                     opts.headers = opts.headers || {};
 
-                    var fetchRemoteData = function() {
+                    var fetchLocalData = function(opts) {
+                        var innerDefer = $q.defer();
+                        var localData = localStorageService.get('rested:' + uri);
+                        if(localStorage && !opts.ignoreLocal && localData !== null) {
+                            $log.info('Loaded local storage for "' + uri + '"');
+
+                            self.__handleResponse(opts, localData, true).then(function(result) {
+                                if(!opts.ignoreData) {
+                                    event.trigger(eventPrefix + 'update', result);
+                                    event.trigger(eventPrefix + 'localUpdate', result);
+                                }
+
+                                innerDefer.resolve(result);
+
+                            }, innerDefer.reject);
+                        } else {
+                            innerDefer.reject();
+                        }
+
+                        return innerDefer.promise;
+                    };
+
+                    var fetchRemoteData = function(opts) {
+                        var innerDefer = $q.defer();
                         self.request(opts).then(function(request) {
                             var response = request.data;
 
                             if(opts.method === 'delete')
-                                self.clearCacheItem(uri);
+                                self.clearCache(uri);
 
                             self.__handleResponse(opts, response).then(function(result) {
-                                event.trigger(eventPrefix + "update", result);
-                                event.trigger(eventPrefix + "remoteUpdate", result);
-                                deferred.resolve(result);
-                            }, deferred.reject);
+                                if(!opts.ignoreData) {
+                                    event.trigger(eventPrefix + 'update', result);
+                                    event.trigger(eventPrefix + 'remoteUpdate', result);
+                                }
 
+                                innerDefer.resolve(result);
+                            }, innerDefer.reject);
 
-                        }, deferred.reject);
+                        }, innerDefer.reject);
+
+                        return innerDefer.promise;
                     };
 
-                    var localData = localStorageService.get("rested:" + uri);
-                    if(localStorage && !opts.ignoreLocal && localData !== null) {
-                        $log.info("Loaded local storage for '" + uri + "'");
+                    var prefer = {
+                        remote: function(opts) {
+                            fetchRemoteData(opts).then(deferred.resolve,
+                                function() {
+                                    fetchLocalData(opts).then(deferred.resolve, deferred.reject);
+                                }
+                            );
+                        },
 
-                        this.__handleResponse(opts, localData, true).then(function(result) {
-                            event.trigger(eventPrefix + "update", result);
-                            event.trigger(eventPrefix + "localUpdate", result);
-                            deferred.resolve(result);
+                        local: function(opts) {
+                            fetchLocalData(opts).then(deferred.resolve,
+                                function() {
+                                    fetchRemoteData(opts).then(deferred.resolve, deferred.reject);
+                                }
+                            );
+                        },
 
-                            if(!opts.stale)
-                                fetchRemoteData();
+                        default: function(opts) {
+                            fetchLocalData(opts).then(function(data) {
+                                    deferred.resolve(data);
+                                    fetchRemoteData(opts).then(deferred.resolve, deferred.reject);
+                                },
+                                function() {
+                                    fetchRemoteData(opts).then(deferred.resolve, deferred.reject);
+                                }
+                            );
+                        },
+                    };
 
-                        }, deferred.reject);
-                    } else
-                        fetchRemoteData();
+                    var preferedFetch = prefer[opts.prefer] || prefer['default'];
+                    preferedFetch(opts);
 
                     var promise = deferred.promise;
                     angular.extend(promise, this);
@@ -417,7 +500,7 @@ app.provider('$rested', function() {
 
                     if(this._isArray) {
                         if(!(response instanceof Array)) {
-                            var reject = "Response isn't of the type array";
+                            var reject = 'Response isn\'t of the type array';
                             $log.warn(reject, response);
                             deferred.reject(reject);
                         } else {
@@ -443,10 +526,10 @@ app.provider('$rested', function() {
                             deferred.resolve(this._dataArray);
 
                             if(localStorage && !ignoreLocal) {
-                                $log.info("Local storage updated for '" + uri + "'");
-                                localStorageService.set("rested:" + uri, response);
+                                $log.info('Local storage updated for "' + uri + '"');
+                                localStorageService.set('rested:' + uri, response);
                             } else {
-                                $log.info("New data updated for '" + uri + "'");
+                                $log.info('New data updated for "' + uri + '"');
                             }
                         }
                     } else {
@@ -459,10 +542,10 @@ app.provider('$rested', function() {
                         deferred.resolve(this._data);
 
                         if(localStorage && !opts.ignoreLocal && !ignoreLocal) {
-                            $log.info("Local storage updated for '" + uri + "'");
-                            localStorageService.set("rested:" + uri, this._data);
+                            $log.info('Local storage updated for "' + uri + '"');
+                            localStorageService.set('rested:' + uri, this._data);
                         } else {
-                            $log.info("New data updated for '" + uri + "'");
+                            $log.info('New data updated for "' + uri + '"');
                         }
                     }
 
@@ -479,7 +562,7 @@ app.provider('$rested', function() {
 
                     if(['get', 'post', 'put', 'delete'].indexOf(opts.method) < 0) {
                         var deferred = $q.defer();
-                        deferred.reject("Invalid method type: " + opts.method);
+                        deferred.reject('Invalid method type: ' + opts.method);
                         return deferred.promise;
                     }
 
@@ -493,18 +576,15 @@ app.provider('$rested', function() {
                         ignoreLoadingBar: opts.ignoreLoadingBar
                     };
 
-                    if(opts.jsonp)
-                        return $http.jsonp(opts.url, config);
-
                     return $http(config);
                 };
 
                 this.route = function(includeParams, includeBaseUrl) {
 
-                    var result = this._routes.join("/");
+                    var result = this._routes.join('/');
 
                     if(includeBaseUrl) {
-                        result = this.getBaseUrl() + result;
+                        result = baseUrl + result;
                     }
 
                     if(includeParams) {
@@ -515,27 +595,19 @@ app.provider('$rested', function() {
                             if(paramsClean[prop] !== undefined) {
                                 pairs.push(prop + '=' + paramsClean[prop]);
                             } else {
-                                $log.warn("Missing argument '{0}'".format(prop));
+                                $log.warn('Missing argument "{0}"'.format(prop));
                             }
                         }
 
                         if(pairs.length > 0)
-                            result = result + "?" + pairs.join('&');
+                            result = result + '?' + pairs.join('&');
                     }
 
                     return result;
                 };
             };
 
-            var clone = function(obj) {
-                var newObj = new object();
-                newObj._routes = obj._routes.slice(0);
-                newObj._baseUrlIndex = obj._baseUrlIndex;
-
-                return newObj;
-            };
-
-            return new object(baseUrlIndex, uri);
+            return new object(uri);
         };
     };
 });

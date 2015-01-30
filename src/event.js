@@ -1,22 +1,21 @@
 'use strict';
 
-var app = angular.module('rested');
-
 app.factory('$event', function($log) {
+    $log = $log.getInstance('Event');
 
     return function() {
         var events = {};
         var eventData = {};
-        var eventPrefix = "";
+        var eventPrefix = '';
 
         var object = {
             reset: function (type) {
-                var index = eventPrefix + "_" + type;
+                var index = eventPrefix + '_' + type;
                 eventData[index] = undefined;
             },
 
             triggerOnce: function (type, data) {
-                var index = eventPrefix + "_" + type;
+                var index = eventPrefix + '_' + type;
                 if(eventData[index] === undefined)
                     return object.trigger(type, data);
 
@@ -24,7 +23,7 @@ app.factory('$event', function($log) {
             },
 
             trigger: function (type, data) {
-                var index = eventPrefix + "_" + type;
+                var index = eventPrefix + '_' + type;
                 eventData[index] = data || null;
 
                 if (!events[index])
@@ -42,12 +41,12 @@ app.factory('$event', function($log) {
             },
 
             on: function (type, callback) {
-                if (typeof callback !== "function") {
-                    $log.warn("[Event] Listener needs to be a function");
+                if (typeof callback !== 'function') {
+                    $log.warn('Listener needs to be a function');
                     return false;
                 }
 
-                var index = eventPrefix + "_" + type;
+                var index = eventPrefix + '_' + type;
                 if (!events[index])
                     events[index] = [];
 
